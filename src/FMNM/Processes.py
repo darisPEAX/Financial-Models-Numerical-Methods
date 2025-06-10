@@ -35,6 +35,60 @@ class Diffusion_process:
         S_T = S0 * np.exp(W)
         return S_T.reshape((N, 1))
 
+class Edgeworth_process:
+     def __init__(self,
+                  r,
+                 sigma, beta_tilde, rho,
+                 alpha_Q, delta_tilde, eta,
+                 lambda_J, mu_J, sigma_J):
+        self.r = r
+        self.sigma = sigma
+        self.beta_tilde = beta_tilde
+        self.rho = rho
+        self.alpha_Q = alpha_Q
+        self.delta_tilde = delta_tilde
+        self.eta = eta
+        self.lambda_J = lambda_J
+        self.mu_J = mu_J
+        self.sigma_J = sigma_J
+        # self.lambda_X = lambda_X
+        # self.lambda_X_sigma = lambda_X_sigma
+        # self.lambda_sigma = lambda_sigma
+
+class BSM_process:
+     def __init__(self,
+                  r,
+                 sigma, beta_tilde, rho,
+                 alpha_Q, delta_tilde, eta):
+        self.r = r
+        self.sigma = sigma
+        self.beta_tilde = beta_tilde
+        self.rho = rho 
+        self.alpha_Q = alpha_Q
+        self.delta_tilde = delta_tilde
+        self.eta = eta
+
+class AHBS_process:
+    """
+    Class for the diffusion process:
+    r = risk free constant rate
+    sig = constant diffusion coefficient
+    mu = constant drift
+    """
+
+    def __init__(self, r=0.1, sig=0.2, mu=0.1):
+        self.r = r
+        self.mu = mu
+        if sig <= 0:
+            raise ValueError("sig must be positive")
+        else:
+            self.sig = sig
+
+    def exp_RV(self, S0, T, N):
+        W = ss.norm.rvs((self.r - 0.5 * self.sig**2) * T, np.sqrt(T) * self.sig, N)
+        S_T = S0 * np.exp(W)
+        return S_T.reshape((N, 1))
+
 
 class Merton_process:
     """
@@ -241,6 +295,31 @@ class Heston_process:
 
         return np.exp(X), v
 
+
+class Bates_process:
+    """
+    Class for the Bates process:
+    r = risk free constant rate
+    rho = correlation between stock noise and variance noise
+    theta = long term mean of the variance process
+    sigma = volatility coefficient of the variance process
+    kappa = mean reversion coefficient for the variance process
+    """
+
+    def __init__(self, mu=0.1, rho=0, sigma=0.2, theta=-0.1, kappa=0.1, lambda_j=0.1, mu_j=0, sigma_j=0.1):
+        self.mu = mu
+        if np.abs(rho) > 1:
+            raise ValueError("|rho| must be <=1")
+        self.rho = rho
+        if theta < 0 or sigma < 0 or kappa < 0:
+            raise ValueError("sigma,theta,kappa must be positive")
+        else:
+            self.theta = theta
+            self.sigma = sigma
+            self.kappa = kappa
+        self.lambda_j = lambda_j
+        self.mu_j = mu_j
+        self.sigma_j = sigma_j
 
 class NIG_process:
     """

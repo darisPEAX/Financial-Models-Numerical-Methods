@@ -290,7 +290,7 @@ class Merton_pricer:
 
     def mesh_plt(self):
         if type(self.S_vec) != np.ndarray or type(self.mesh) != np.ndarray:
-            self.PDE_price((7000, 5000))
+            self.PIDE_price((7000, 5000))
 
         fig = plt.figure()
         ax = fig.add_subplot(111, projection="3d")
@@ -303,3 +303,127 @@ class Merton_pricer:
         ax.set_zlabel("V")
         ax.view_init(30, -100)  # this function rotates the 3d plot
         plt.show()
+
+    def delta_one(self, method="closed_formula", h_percent=0.01):
+        """
+        Calculate the option delta using finite difference method with central difference.
+        
+        Parameters:
+        -----------
+        method : str
+            Method to calculate option prices. Options: "closed_formula", "Fourier_inversion", "PIDE_price"
+        h_percent : float
+            Percentage of stock price to use as step size
+            
+        Returns:
+        --------
+        float
+            The delta of the option
+        """
+        h = self.S0 * h_percent
+        
+        # Store original S0
+        original_S0 = self.S0
+        
+        # Calculate price at S0 + h
+        self.S0 = original_S0 + h
+        if method == "closed_formula":
+            price_up = self.closed_formula()
+        elif method == "Fourier_inversion":
+            price_up = self.Fourier_inversion()
+        elif method == "PIDE_price":
+            price_up = self.PIDE_price((5000, 4000))
+        else:
+            raise ValueError("Invalid method. Choose 'closed_formula', 'Fourier_inversion' or 'PIDE_price'")
+            
+        # Calculate price at S0 - h
+        self.S0 = original_S0 - h
+        if method == "closed_formula":
+            price_down = self.closed_formula()
+        elif method == "Fourier_inversion":
+            price_down = self.Fourier_inversion()
+        elif method == "PIDE_price":
+            price_down = self.PIDE_price((5000, 4000))
+        
+        # Restore original S0
+        self.S0 = original_S0
+        
+        # Calculate delta using central difference
+        delta = (price_up - price_down) / (2 * h)
+        
+        return delta
+    
+    def delta(self, x, h=None):
+        """
+        Compute delta numerically via central difference.
+        method: one of "closed_formula", "Fourier", or "MC"
+        h: step size for perturbation. If None, defaults to 1% of S0.
+        """
+        if h is None:
+            h = 0.01 * self.S0
+
+        # Store original S0
+        S0_orig = self.S0
+
+        # Perturb up
+        self.S0 = S0_orig + h
+        price_up = self.FFT(x)
+
+        # Perturb down
+        self.S0 = S0_orig - h
+        price_down = self.FFT(x)
+        
+        # Restore original S0
+        self.S0 = S0_orig
+
+        # Central difference
+        delta = (price_up - price_down) / (2 * h)
+        return delta
+
+    def gamma(self, x, h=None):
+        """
+        Compute gamma numerically via central difference.
+        """
+        if h is None:
+            h = 0.01 * self.S0
+
+        # Store original S0
+        S0_orig = self.S0
+
+        # Perturb up
+        self.S0 = S0_orig + h
+        delta_up = self.delta(x, h)
+
+        # Perturb down
+        self.S0 = S0_orig - h
+        delta_down = self.delta(x, h)
+
+        # Restore original S0
+        self.S0 = S0_orig
+
+        # Central difference
+        gamma = (delta_up - delta_down) / (2 * h)
+        return gamma
+
+    def theta(self, x, h=None):
+        """
+        Compute theta numerically via central difference.
+        """
+        if h is None:
+            h = 0.01 * self.S0
+
+        T_orig = self.T
+
+        price_now = self.FFT(x)
+
+        # Go forward in time by 1 day
+        self.T = T_orig - 1.0/252
+        price_future = self.FFT(x)
+        
+        # Restore original T
+        self.T = T_orig
+
+        # Central difference
+        theta = (price_future - price_now)*252
+        return theta
+        

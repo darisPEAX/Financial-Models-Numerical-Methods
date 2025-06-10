@@ -11,14 +11,14 @@ import numpy as np
 import scipy as scp
 import scipy.stats as ss
 
-from FMNM.CF import cf_Heston_good, cf_Heston
+from FMNM.CF import cf_Bates
 from FMNM.cython.heston import Heston_paths
 from FMNM.probabilities import Q1, Q2
 from functools import partial
 from FMNM.FFT import fft_Lewis, IV_from_Lewis
 
 
-class Heston_pricer:
+class Bates_pricer:
     """
     Class to price the options with the Heston model by:
     - Fourier-inversion.
@@ -38,6 +38,9 @@ class Heston_pricer:
         self.theta = Process_info.theta  # Heston parameter
         self.kappa = Process_info.kappa  # Heston parameter
         self.rho = Process_info.rho  # Heston parameter
+        self.lambda_j = Process_info.lambda_j  # Bates parameter
+        self.mu_j = Process_info.mu_j  # Bates parameter
+        self.sigma_j = Process_info.sigma_j  # Bates parameter
 
         self.S0 = Option_info.S0  # current price
         self.v0 = Option_info.v0  # spot variance
@@ -75,6 +78,9 @@ class Heston_pricer:
             kappa=self.kappa,
             theta=self.theta,
             sigma=self.sigma,
+            lambda_j=self.lambda_j,
+            mu_j=self.mu_j,
+            sigma_j=self.sigma_j,
         )
         S_T = S_T.reshape((paths, 1))
         DiscountedPayoff = np.exp(-self.r * self.T) * self.payoff_f(S_T)
@@ -100,7 +106,7 @@ class Heston_pricer:
         """
         k = np.log(self.K / self.S0)  # log moneyness
         cf_H_b_good = partial(
-            cf_Heston_good,
+            cf_Bates,
             t=self.T,
             v0=self.v0,
             mu=self.r,
@@ -108,6 +114,9 @@ class Heston_pricer:
             sigma=self.sigma,
             kappa=self.kappa,
             rho=self.rho,
+            lambda_j=self.lambda_j,
+            mu_j=self.mu_j,
+            sigma_j=self.sigma_j,
         )
 
         limit_max = 2000  # right limit in the integration
@@ -132,7 +141,7 @@ class Heston_pricer:
         """
         K = np.array(K)
         cf_H_b_good = partial(
-            cf_Heston_good,
+            cf_Bates,
             t=self.T,
             v0=self.v0,
             mu=self.r,
@@ -140,6 +149,9 @@ class Heston_pricer:
             sigma=self.sigma,
             kappa=self.kappa,
             rho=self.rho,
+            lambda_j=self.lambda_j,
+            mu_j=self.mu_j,
+            sigma_j=self.sigma_j,
         )
 
         if self.payoff == "call":
@@ -157,7 +169,7 @@ class Heston_pricer:
         """Implied Volatility from the Lewis formula"""
 
         cf_H_b_good = partial(
-            cf_Heston_good,
+            cf_Bates,
             t=self.T,
             v0=self.v0,
             mu=self.r,
@@ -224,3 +236,25 @@ class Heston_pricer:
         # Central difference
         gamma = (delta_up - delta_down) / (2 * h)
         return gamma
+
+    def theta_greek(self, x, h=None):
+        """
+        Compute theta numerically via central difference.
+        """
+        if h is None:
+            h = 0.01 * self.S0
+
+        T_orig = self.T
+
+        price_now = self.FFT(x)
+
+        # Go forward in time by 1 day
+        self.T = T_orig - 1.0/252
+        price_future = self.FFT(x)
+        
+        # Restore original T
+        self.T = T_orig
+
+        # Central difference
+        theta = (price_future - price_now)*252
+        return theta

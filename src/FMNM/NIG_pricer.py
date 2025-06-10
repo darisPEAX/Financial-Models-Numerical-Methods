@@ -21,6 +21,7 @@ from matplotlib import cm
 from FMNM.CF import cf_NIG
 from FMNM.probabilities import Q1, Q2
 from functools import partial
+from FMNM.FFT import fft_Lewis, IV_from_Lewis
 
 
 class NIG_pricer:
@@ -46,6 +47,7 @@ class NIG_pricer:
         self.theta = Process_info.theta  # NIG parameter
         self.kappa = Process_info.kappa  # NIG parameter
         self.exp_RV = Process_info.exp_RV  # function to generate exponential NIG Random Variables
+        self.w = -np.log(1 - self.theta * self.kappa - self.kappa / 2 * self.sigma**2) / self.kappa  # coefficient w
 
         self.S0 = Option_info.S0  # current price
         self.K = Option_info.K  # strike
@@ -93,6 +95,49 @@ class NIG_pricer:
                 1 - Q1(k, cf_NIG_b, np.inf)
             )  # pricing function
             return put
+        else:
+            raise ValueError("invalid type. Set 'call' or 'put'")
+        
+    def FFT(self, K):
+        """
+        FFT method. It returns a vector of prices.
+        K is an array of strikes
+        """
+        K = np.array(K)
+        cf_NIG_b = partial(
+            cf_NIG,
+            t=self.T,
+            mu=(self.r - self.w),
+            theta=self.theta,
+            sigma=self.sigma,
+            kappa=self.kappa,
+        )
+
+        if self.payoff == "call":
+            return fft_Lewis(K, self.S0, self.r, self.T, cf_NIG_b, interp="cubic")
+        elif self.payoff == "put":  # put-call parity
+            return (
+                fft_Lewis(K, self.S0, self.r, self.T, cf_NIG_b, interp="cubic") - self.S0 + K * np.exp(-self.r * self.T)
+            )
+        else:
+            raise ValueError("invalid type. Set 'call' or 'put'")
+
+    def IV_Lewis(self):
+        """Implied Volatility from the Lewis formula"""
+
+        cf_VG_b = partial(
+            cf_NIG,
+            t=self.T,
+            mu=(self.r - self.w),
+            theta=self.theta,
+            sigma=self.sigma,
+            kappa=self.kappa,
+        )
+
+        if self.payoff == "call":
+            return IV_from_Lewis(self.K, self.S0, self.T, self.r, cf_VG_b)
+        elif self.payoff == "put":
+            raise NotImplementedError
         else:
             raise ValueError("invalid type. Set 'call' or 'put'")
 
