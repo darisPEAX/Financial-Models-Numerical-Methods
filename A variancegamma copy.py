@@ -53,50 +53,43 @@ import py_vollib.black_scholes_merton.implied_volatility
 import py_vollib_vectorized
 
 
-def train_VG(strikes, prices, spreads, r, S0, T, market_ivs):
-    def f_VG(x, theta, sigma, kappa):
+def train_VG(dataframe_call, dataframe_put, r, S0, T):
+    def f_VG(x, theta, sigma, kappa, payoff="call"):
         VG_param = VG_process(r=r, theta=theta, sigma=sigma, kappa=kappa)
-        opt_param = Option_param(S0=S0, K=x, T=T, v0=0.04, exercise="European", payoff="call")
+        opt_param = Option_param(S0=S0, K=x, T=T, v0=0.04, exercise="European", payoff=payoff)
         VG = VG_pricer(opt_param, VG_param)
         return VG
 
     def obj_fun(params):
         try:
-            model = f_VG(strikes, params[0], params[1], params[2])
-            model_prices = model.FFT(strikes)
-            flag = ['c' for _ in range(len(strikes))]
-            t = pd.Series([T for _ in range(len(strikes))])
-            model_ivs = py_vollib_vectorized.vectorized_implied_volatility(model_prices, S0, strikes, t, r, flag, q=0, return_as='numpy')
+            # Call
+            model = f_VG(dataframe_call, params[0], params[1], params[2], payoff="call")
+            model_prices = model.FFT(dataframe_call.Strike.values)
+            flag = ['c' for _ in range(len(dataframe_call.Strike.values))]
+            t = pd.Series([T for _ in range(len(dataframe_call.Strike.values))])
+            model_ivs = py_vollib_vectorized.vectorized_implied_volatility(model_prices, S0, dataframe_call.Strike.values, t, r, flag, q=0, return_as='numpy')
             nan_mask = ~np.isfinite(model_ivs)
             if np.any(nan_mask):
                 return 1e6
-            return np.mean((market_ivs - model_ivs)**2)
+            call_mse = np.mean((dataframe_call.IV.values - model_ivs)**2)
+
+            # Put
+            model = f_VG(dataframe_put, params[0], params[1], params[2], payoff="put")
+            model_prices = model.FFT(dataframe_put.Strike.values)
+            flag = ['p' for _ in range(len(dataframe_put.Strike.values))]
+            t = pd.Series([T for _ in range(len(dataframe_put.Strike.values))])
+            model_ivs = py_vollib_vectorized.vectorized_implied_volatility(model_prices, S0, dataframe_put.Strike.values, t, r, flag, q=0, return_as='numpy')
+            nan_mask = ~np.isfinite(model_ivs)
+            if np.any(nan_mask):
+                return 1e6
+            put_mse = np.mean((dataframe_put.IV.values - model_ivs)**2)
+
+            return call_mse + put_mse
         except Exception as e:
             print(f"Error with parameters {params}: {e}")
             return 1e6  # Return a large penalty value
 
-    # Try different initial values
-    init_vals = [0.01, 0.2, 0.1]  # More conservative initial values
-    # bounds = [(0, 1), (0, 1), (0, 1)]
-    # params = scpo.differential_evolution(obj_fun, bounds)
-    # return params.x
-    
-    # Test initial values to ensure they work
-    # try:
-    #     print("Testing initial parameters...")
-    #     test_model = f_VG(strikes, init_vals[0], init_vals[1], init_vals[2])
-    #     test_prices = test_model.FFT(strikes)
-    #     print(f"Initial test successful, got {len(test_prices)} prices")
-    # except Exception as e:
-    #     print(f"Initial parameter test failed: {e}")
-    #     # If initial test fails, try even more conservative values
-    #     # init_vals = [0.0, 0.2, 0.1]
-    #     init_vals = [-1, 0.4, 1]
-    #     print(f"Trying more conservative values: {init_vals}")
-
     init_vals = [-1, 0.4, 1]
-    
-    # Try with different optimizer settings
     try:
         bounds = ([-50.0, 0.01, 0.01], [50.0, 10.0, 10.0])  # More restrictive bounds
         params_VG = scpo.least_squares(obj_fun, x0=init_vals, bounds=bounds, method='trf', 
@@ -109,13 +102,13 @@ def train_VG(strikes, prices, spreads, r, S0, T, market_ivs):
                                options={'maxiter': 1000, 'xatol': 1e-8, 'fatol': 1e-8})
         return result.x
 
-def get_VG_pricer(params, strikes, r, S0, T):
+def get_VG_pricer(params, strikes, r, S0, T, payoff="call"):
     VG_param = VG_process(r=r, theta=params[0], sigma=params[1], kappa=params[2])
-    opt_param = Option_param(S0=S0, K=strikes, T=T, v0=0.04, exercise="European", payoff="call")
+    opt_param = Option_param(S0=S0, K=strikes, T=T, v0=0.04, exercise="European", payoff=payoff)
     VG = VG_pricer(opt_param, VG_param)
     return VG
 
-def calibrate_model(dataframe, T, model="Merton", disp=False):
+def calibrate_model(dataframe_call, dataframe_put, T, model="Merton", disp=False):
     MSE_list = []
     MSE_deep_itm_list = []
     MSE_mid_itm_list = []
@@ -125,30 +118,43 @@ def calibrate_model(dataframe, T, model="Merton", disp=False):
     MSE_mid_otm_list = []
     MSE_deep_otm_list = []
     params_list = []
-    for exdate in dataframe.exdate.unique():
+    print("Amount of dates: ", len(dataframe_call.exdate.unique()))
+    for exdate in dataframe_call.exdate.unique()[:30]:
         print("Doing date: ", exdate)
-        option_type_exdate = dataframe[dataframe.exdate == exdate]
-        sort_idx = np.argsort(option_type_exdate.Strike.values)
-        option_type_exdate = option_type_exdate.iloc[sort_idx]
-        option_type_exdate = option_type_exdate[option_type_exdate.IV.notna()]
-        strikes = option_type_exdate.Strike.values
-        prices = option_type_exdate.Midpoint.values
-        spreads = option_type_exdate.Spread.values
-        S0 = option_type_exdate.Close.values[0]
-        IV_actual = option_type_exdate.IV.values
+        call_exdate = dataframe_call[dataframe_call.exdate == exdate]
+        put_exdate = dataframe_put[dataframe_put.exdate == exdate]
+        sort_idx = np.argsort(call_exdate.Strike.values)
+        call_exdate = call_exdate.iloc[sort_idx]
+        put_exdate = put_exdate.iloc[sort_idx]
+        call_exdate = call_exdate[call_exdate.IV.notna()]
+        put_exdate = put_exdate[put_exdate.IV.notna()]
+        call_exdate = call_exdate[call_exdate.Strike.values / call_exdate.Close.values > 1]
+        put_exdate = put_exdate[put_exdate.Strike.values / put_exdate.Close.values < 1]
+        S0 = call_exdate.Close.values[0]
 
         start_time = time.time()
-        params_VG = train_VG(strikes, prices, spreads, r, S0, T, IV_actual)
-        VG = get_VG_pricer(params_VG, strikes, r, S0, T)
-        prices_model = VG.FFT(strikes)
-        flag = ['c' for _ in range(len(strikes))]
-        t = pd.Series([T for _ in range(len(strikes))])
-        IV_model = py_vollib_vectorized.vectorized_implied_volatility(prices_model, S0, strikes, t, r, flag, q=0, return_as='numpy')
-        MSE = np.mean((IV_model - IV_actual)**2)
+        # Call
+        params_VG = train_VG(call_exdate, put_exdate, r, S0, T)
+        VG_call = get_VG_pricer(params_VG, call_exdate.Strike.values, r, S0, T, payoff="call")
+        prices_model_call = VG_call.FFT(call_exdate.Strike.values)
+        flag_c = ['c' for _ in range(len(call_exdate.Strike.values))]
+        t_c = pd.Series([T for _ in range(len(call_exdate.Strike.values))])
+        IV_model_call = py_vollib_vectorized.vectorized_implied_volatility(prices_model_call, S0, call_exdate.Strike.values, t_c, r, flag_c, q=0, return_as='numpy')
+        
+        # Put
+        VG_put = get_VG_pricer(params_VG, put_exdate.Strike.values, r, S0, T, payoff="put")
+        prices_model_put = VG_put.FFT(put_exdate.Strike.values)
+        flag_p = ['p' for _ in range(len(put_exdate.Strike.values))]
+        t_p = pd.Series([T for _ in range(len(put_exdate.Strike.values))])
+        IV_model_put = py_vollib_vectorized.vectorized_implied_volatility(prices_model_put, S0, put_exdate.Strike.values, t_p, r, flag_p, q=0, return_as='numpy')
+        # Calculate MSE for all strikes
+        MSE = np.mean((IV_model_call - call_exdate.IV.values)**2) + np.mean((IV_model_put - put_exdate.IV.values)**2)
         MSE_list.append(MSE)
+        print("MSE: ", MSE)
 
         # Calculate MSE
-        moneyness = strikes/S0
+        moneyness_call = call_exdate.Strike.values/S0
+        moneyness_put = put_exdate.Strike.values/S0
         ranges = [
             (0, 0.85, 'deep_itm'),
             (0.85, 0.95, 'mid_itm'),
@@ -159,19 +165,28 @@ def calibrate_model(dataframe, T, model="Merton", disp=False):
             (1.15, float('inf'), 'deep_otm')
         ]
         for lower, upper, name in ranges:
-            mask = (moneyness >= lower) & (moneyness < upper)
-            mse = np.mean((IV_model[mask] - IV_actual[mask])**2)
-            locals()[f'MSE_{name}_list'].append(mse)
+            mask_call = (moneyness_call >= lower) & (moneyness_call < upper)
+            mask_put = (moneyness_put >= lower) & (moneyness_put < upper)
+            diff_call = np.array(IV_model_call)[mask_call] - np.array(call_exdate.IV.values)[mask_call]
+            curr_mse = np.array([])
+            if diff_call.size != 0:
+                curr_mse = np.concatenate([curr_mse, diff_call**2])
+            diff_put = np.array(IV_model_put)[mask_put] - np.array(put_exdate.IV.values)[mask_put]
+            if diff_put.size != 0:
+                curr_mse = np.concatenate([curr_mse, diff_put**2])
+            locals()[f'MSE_{name}_list'].append(np.mean(curr_mse))
 
-        print("MSE: ", MSE)
+        # print("MSE: ", MSE_call + MSE_put)
         if disp:
             print("exdate: ", exdate)
-            print("date: ", set(option_type_exdate.date.values))
+            print("date: ", set(call_exdate.date.values))
             
             print("Training time: ", time.time() - start_time, "seconds")
             plt.figure(figsize=(10,6))
-            plt.scatter(strikes, IV_actual, label='Actual IV', s=20, alpha=0.3)
-            plt.plot(strikes, IV_model, label='VG IV')
+            plt.scatter(call_exdate.Strike.values, call_exdate.IV.values, label='Actual IV', s=20, alpha=0.3)
+            plt.plot(call_exdate.Strike.values, IV_model_call, label='VG IV')
+            plt.scatter(put_exdate.Strike.values, put_exdate.IV.values, label='Actual IV', s=20, alpha=0.3)
+            plt.plot(put_exdate.Strike.values, IV_model_put, label='VG IV')
             plt.xlabel('Strike Price')
             plt.ylabel('Implied Volatility')
             plt.title('Implied Volatility Comparison')
@@ -203,8 +218,11 @@ def calibrate_model(dataframe, T, model="Merton", disp=False):
 #     print(f"{np.nanmean(rmse_values):.3f} ({np.nanstd(rmse_values):.3f})")
 
 
-# MSE_VG_1, params_VG_1 = calibrate_model(CALL_1dte_2023, T=1/252, model="VG", disp=True)
-# pd.DataFrame(pd.DataFrame(MSE_VG_1)).to_csv("data/results/MSE_VG_1_2023.csv", index=False)
+MSE_VG_1, params_VG_1 = calibrate_model(CALL_1dte_2023, PUT_1dte_2023, T=1/252, model="VG", disp=True)
+for column in MSE_VG_1.keys():
+    rmse_values = [np.sqrt(mse) for mse in MSE_VG_1[column]]
+    print(f"{column}: {np.nanmean(rmse_values):.3f} ({np.nanstd(rmse_values):.3f})")
+pd.DataFrame(pd.DataFrame(MSE_VG_1)).to_csv("data/results/MSE_VG_1_2023_copy.csv", index=False)
 
 # MSE_VG_7, params_VG_7 = calibrate_model(CALL_7dte, T=5/252, model="VG")
 # pd.DataFrame(pd.DataFrame(MSE_VG_7)).to_csv("data/MSE_VG_7.csv", index=False)

@@ -29,12 +29,12 @@ T = 1 / 252
 # CALL_1dte = data_1dte[data_1dte.cp_flag == "C"].reset_index(drop=True)
 # PUT_1dte = data_1dte[data_1dte.cp_flag == "P"].reset_index(drop=True)
 
-data_1dte_2023 = pd.read_csv("data/data_1dte_2023.csv")
+data_1dte_2023 = pd.read_csv("data/source/data_1dte_2023_new.csv")
 data_1dte_2023 = data_1dte_2023[data_1dte_2023.Close.notna()]
 CALL_1dte_2023 = data_1dte_2023[data_1dte_2023.cp_flag == "C"].reset_index(drop=True)
 PUT_1dte_2023 = data_1dte_2023[data_1dte_2023.cp_flag == "P"].reset_index(drop=True)
 
-data_2dte_2023 = pd.read_csv("data/data_2dte_2023.csv")
+data_2dte_2023 = pd.read_csv("data/source/data_2dte_2023_new.csv")
 data_2dte_2023 = data_2dte_2023[data_2dte_2023.Close.notna()]
 CALL_2dte_2023 = data_2dte_2023[data_2dte_2023.cp_flag == "C"].reset_index(drop=True)
 PUT_2dte_2023 = data_2dte_2023[data_2dte_2023.cp_flag == "P"].reset_index(drop=True)
@@ -62,7 +62,7 @@ def svi_vol(x, a, b, sigma, rho, m):
     raw = np.maximum(raw, 1e-6)
     return np.sqrt(raw / T)
 
-def calibrate_model(dataframe, T, model="Merton", disp=False):
+def calibrate_model(dataframe_call, dataframe_put, T, model="Merton", disp=False):
     MSE_list = []
     MSE_deep_itm_list = []
     MSE_mid_itm_list = []
@@ -72,26 +72,45 @@ def calibrate_model(dataframe, T, model="Merton", disp=False):
     MSE_mid_otm_list = []
     MSE_deep_otm_list = []
     params_list = []
-    for exdate in dataframe.exdate.unique():
+    for exdate in dataframe_call.exdate.unique():
         if disp == True:
             print("Doing date: ", exdate)
-        option_type_exdate = dataframe[dataframe.exdate == exdate]
-        sort_idx = np.argsort(option_type_exdate.Strike.values)
-        option_type_exdate = option_type_exdate.iloc[sort_idx]
-        option_type_exdate = option_type_exdate[option_type_exdate.IV.notna()]
-        strikes = option_type_exdate.Strike.values
-        prices = option_type_exdate.Midpoint.values
-        spreads = option_type_exdate.Spread.values
-        S0 = option_type_exdate.Close.values[0]
-        IV_actual = option_type_exdate.IV.values
+        call_exdate = dataframe_call[dataframe_call.exdate == exdate]
+        put_exdate = dataframe_put[dataframe_put.exdate == exdate]
+        sort_idx_call = np.argsort(call_exdate.Strike.values)
+        call_exdate = call_exdate.iloc[sort_idx_call]
+        sort_idx_put = np.argsort(put_exdate.Strike.values)
+        put_exdate = put_exdate.iloc[sort_idx_put]
+        call_exdate = call_exdate[call_exdate.IV.notna()]
+        call_exdate = call_exdate[call_exdate.Strike / call_exdate.Close > 1]
+        put_exdate = put_exdate[put_exdate.IV.notna()]
+        put_exdate = put_exdate[put_exdate.Strike / put_exdate.Close < 1]
+        strikes_call = call_exdate.Strike.values
+        prices_call = call_exdate.Midpoint.values
+        spreads_call = call_exdate.Spread.values
+        strikes_put = put_exdate.Strike.values
+        prices_put = put_exdate.Midpoint.values
+        spreads_put = put_exdate.Spread.values
+        IV_actual_call = call_exdate.IV.values
+        IV_actual_put = put_exdate.IV.values
+        S0 = call_exdate.Close.values[0]
 
-        log_moneyness = np.log(strikes/S0)
-
+        moneyness_call = strikes_call / S0
+        moneyness_put = strikes_put / S0
+        
+        # Concatenate call and put data into single arrays
+        strikes_all = np.concatenate([strikes_put, strikes_call])
+        prices_all = np.concatenate([prices_put, prices_call])
+        spreads_all = np.concatenate([spreads_put, spreads_call])
+        IV_actual_all = np.concatenate([IV_actual_put, IV_actual_call])
+        moneyness_all = np.concatenate([moneyness_put, moneyness_call])
+        
+        log_moneyness = np.log(strikes_all/S0)
         # --- vectorized residuals with weighting ---
         def residuals(params):
             vols   = svi_vol(log_moneyness, *params)
-            weights = np.sqrt(np.maximum(IV_actual, 1e-4))
-            return (vols - IV_actual) / weights
+            weights = np.sqrt(np.maximum(IV_actual_all, 1e-4))
+            return (vols - IV_actual_all) / weights
 
         # Multi-start least-squares calibration
         starting_points = [
@@ -124,11 +143,11 @@ def calibrate_model(dataframe, T, model="Merton", disp=False):
         result = best_result
         IV_model = [svi_vol(x,*result.x) for x in log_moneyness]
         params_list.append(result.x)
-        MSE = np.mean((IV_model - IV_actual)**2)
+        MSE = np.mean((IV_model - IV_actual_all)**2)
         MSE_list.append(MSE)
 
         # Calculate MSE
-        moneyness = strikes/S0
+        moneyness = strikes_all/S0
         ranges = [
             (0, 0.85, 'deep_itm'),
             (0.85, 0.95, 'mid_itm'),
@@ -140,29 +159,21 @@ def calibrate_model(dataframe, T, model="Merton", disp=False):
         ]
         for lower, upper, name in ranges:
             mask = (moneyness >= lower) & (moneyness < upper)
-            mse = np.mean((np.array(IV_model)[mask] - np.array(IV_actual)[mask])**2)
+            mse = np.mean((np.array(IV_model)[mask] - np.array(IV_actual_all)[mask])**2)
             locals()[f'MSE_{name}_list'].append(mse)
 
         if disp == True:
             print("exdate: ", exdate)
-            print("date: ", set(option_type_exdate.date.values))
+            print("date: ", set(call_exdate.date.values))
             print("MSE: ", MSE)
             plt.figure(figsize=(10,6))
-            plt.scatter(strikes, IV_actual, label='Actual IV', s=20, alpha=0.3)
-            plt.plot(strikes, IV_model, label='Merton IV')
+            plt.scatter(strikes_all, IV_actual_all, label='Actual IV', s=20, alpha=0.3)
+            plt.plot(strikes_all, IV_model, label='SVI IV')
             plt.xlabel('Strike Price')
             plt.ylabel('Implied Volatility')
             plt.title('Implied Volatility Comparison')
             plt.legend()
             plt.grid(True)
-    # print(f"Results for {model}: {np.mean(MSE_list):.5f} ({np.std(MSE_list):.5f})")
-    # print(f"MSE_deep_itm_list: {np.mean(MSE_deep_itm_list):.5f} ({np.std(MSE_deep_itm_list):.5f})")
-    # print(f"MSE_mid_itm_list: {np.mean(MSE_mid_itm_list):.5f} ({np.std(MSE_mid_itm_list):.5f})")
-    # print(f"MSE_near_itm_list: {np.mean(MSE_near_itm_list):.5f} ({np.std(MSE_near_itm_list):.5f})")
-    # print(f"MSE_atm_list: {np.mean(MSE_atm_list):.5f} ({np.std(MSE_atm_list):.5f})")
-    # print(f"MSE_near_otm_list: {np.mean(MSE_near_otm_list):.5f} ({np.std(MSE_near_otm_list):.5f})")
-    # print(f"MSE_mid_otm_list: {np.mean(MSE_mid_otm_list):.5f} ({np.std(MSE_mid_otm_list):.5f})")
-    # print(f"MSE_deep_otm_list: {np.mean(MSE_deep_otm_list):.5f} ({np.std(MSE_deep_otm_list):.5f})")
     MSE_dict = {
         "MSE_list": MSE_list,
         "MSE_deep_itm_list": MSE_deep_itm_list,
@@ -187,14 +198,23 @@ def calibrate_model(dataframe, T, model="Merton", disp=False):
 #     rmse_values = [np.sqrt(mse) for mse in MSE_SVI_1_ticker["MSE_list"]]
 #     print(f"{np.nanmean(rmse_values):.3f} ({np.nanstd(rmse_values):.3f})")
 
-# MSE_SVI_1, params_list_1 = calibrate_model(CALL_1dte, T=1/252, model="SVI")
-# MSE_SVI_7, params_list_7 = calibrate_model(CALL_7dte, T=5/252, model="SVI")
-# MSE_SVI_30, params_list_30 = calibrate_model(CALL_30dte, T=22/252, model="SVI")
+# MSE_SVI_1, params_SVI_1 = calibrate_model(CALL_1dte_2023, PUT_1dte_2023, T=1/252, model="SVI", disp=True)
+# for column in MSE_SVI_1.keys():
+#     rmse_values = [np.sqrt(mse) for mse in MSE_SVI_1[column]]
+#     print(f"{column}: {np.nanmean(rmse_values):.3f} ({np.nanstd(rmse_values):.3f})")
+# pd.DataFrame(pd.DataFrame(MSE_SVI_1)).to_csv("data/results/MSE_SVI_1_2023_copy.csv", index=False)
 
-# pd.DataFrame(pd.DataFrame(MSE_SVI_1)).to_csv("data/MSE_SVI_1.csv", index=False)
-# pd.DataFrame(pd.DataFrame(MSE_SVI_7)).to_csv("data/MSE_SVI_7.csv", index=False)
-# pd.DataFrame(pd.DataFrame(MSE_SVI_30)).to_csv("data/MSE_SVI_30.csv", index=False)
+# MSE_SVI_7, params_SVI_7 = calibrate_model(CALL_7dte, PUT_7dte, T=5/252, model="SVI", disp=True)
+# for column in MSE_SVI_7.keys():
+#     rmse_values = [np.sqrt(mse) for mse in MSE_SVI_7[column]]
+#     print(f"{column}: {np.nanmean(rmse_values):.3f} ({np.nanstd(rmse_values):.3f})")
+# pd.DataFrame(pd.DataFrame(MSE_SVI_7)).to_csv("data/results/MSE_SVI_7_2023_copy.csv", index=False)
 
+# MSE_SVI_30, params_SVI_30 = calibrate_model(CALL_30dte, PUT_30dte, T=22/252, model="SVI", disp=True)
+# for column in MSE_SVI_30.keys():
+#     rmse_values = [np.sqrt(mse) for mse in MSE_SVI_30[column]]
+#     print(f"{column}: {np.nanmean(rmse_values):.3f} ({np.nanstd(rmse_values):.3f})")
+# pd.DataFrame(pd.DataFrame(MSE_SVI_30)).to_csv("data/results/MSE_SVI_30_2023_copy.csv", index=False)
 
 
 from hedging import simulate_hedging
